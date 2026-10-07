@@ -1,0 +1,27 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+**/secrets.toml
+**/.env
+
+# Editor and operating system files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Model and training artifacts
+*.ckpt
+*.safetensors
+*.pt
+*.pth
+*.bin
+
