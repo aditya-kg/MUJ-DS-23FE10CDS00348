@@ -21,7 +21,11 @@ This repository accompanies training in **Natural Language Processing (NLP)**. I
 
 ## Project overview
 
-People often refer to earlier messages with pronouns, omit context, or change topics mid-conversation. This project processes each user turn in a conversation, rewrites context-dependent messages as self-contained queries, and assigns a two-level topic label such as `Politics > India` or `Sports > Cricket`.
+**Real-Time Query Expansion and Topic Tagging** is an NLP tool that takes a message from a conversation, uses the surrounding context to rewrite it as a clearer, standalone query, then assigns it a broad topic and a subtopic.
+
+For example, after someone mentions India’s prime minister, the tool could turn **“What are his duties?”** into **“What are Narendra Modi’s duties as Prime Minister of India?”**, then label it **Politics → India**.
+
+The app can also generate a brief reply to each new message using the conversation and the model’s general knowledge. It does not retrieve live information, so answers about current events may be outdated. Query expansion and topic tagging remain the core project features.
 
 The college repository brings together the Streamlit application and the backend research pipeline. The backend contains dataset preparation and deduplication notebooks, classifier training and inference notebooks, generated datasets, model documentation, and a project report.
 

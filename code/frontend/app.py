@@ -1,8 +1,14 @@
 import streamlit as st
-import re
+import html
 from collections import deque
 from dataclasses import dataclass
-from typing import List
+from typing import List, Optional
+from nlp_logic import (
+    canonical_l1,
+    is_interruption,
+    parse_expansion_decision,
+    select_consistent_l2,
+)
 
 # ── PAGE CONFIG  (must be first Streamlit call) ───────────────────
 st.set_page_config(
@@ -18,12 +24,6 @@ st.set_page_config(
 GROQ_MODEL     = "openai/gpt-oss-20b"
 CONTEXT_WINDOW = 20
 ENTITY_TYPES   = {"PERSON", "GPE", "ORG", "EVENT", "NORP", "FAC", "LOC"}
-
-INTERRUPT_PATTERNS = [
-    r"^\s*(brb|brt|back|ok|okay|k|thanks|thank you|got it|noted|alright|sure|"
-    r"wait|hold on|one sec|give me a (min|sec|moment)|be right back|"
-    r"i.?m back|coming back|just a min|afk)[\.!\?]?\s*$"
-]
 
 TOPIC_COLORS = {
     "Politics":      "#3B82F6",
@@ -83,6 +83,54 @@ SAMPLE_CONVERSATIONS = [
             ("user",      "how do they compare?"),
         ],
     },
+    {
+        "label": "📜 History — India",
+        "turns": [
+            ("user",      "who was India's first prime minister?"),
+            ("assistant", "Jawaharlal Nehru was India's first prime minister after independence."),
+            ("user",      "how long was he in office?"),
+            ("assistant", "He served as Prime Minister from 1947 until his death in 1964, nearly 17 years."),
+            ("user",      "which political party did he lead?"),
+            ("assistant", "Nehru was a leading member of the Indian National Congress."),
+            ("user",      "what role did he play in the Non-Aligned Movement?"),
+        ],
+    },
+    {
+        "label": "🥗 Health — Nutrition",
+        "turns": [
+            ("user",      "what are lentils rich in?"),
+            ("assistant", "Lentils are rich in plant protein, dietary fiber, and several minerals."),
+            ("user",      "do lentils contain iron?"),
+            ("assistant", "Yes. Lentils contain iron, though plant-based iron is absorbed less readily than iron from meat."),
+            ("user",      "are they also high in fiber?"),
+            ("assistant", "Yes. Lentils provide dietary fiber, which supports digestion as part of a balanced diet."),
+            ("user",      "compare red and green lentils"),
+        ],
+    },
+    {
+        "label": "🎬 Entertainment — Hollywood",
+        "turns": [
+            ("user",      "who directed interstellar?"),
+            ("assistant", "Christopher Nolan directed Interstellar."),
+            ("user",      "what other film did he make about dreams?"),
+            ("assistant", "Nolan directed Inception, a science-fiction film centered on dreams."),
+            ("user",      "when was it released?"),
+            ("assistant", "Inception was released in 2010."),
+            ("user",      "compare the themes of both films"),
+        ],
+    },
+    {
+        "label": "🌍 Geography — Cities",
+        "turns": [
+            ("user",      "where is the eiffel tower?"),
+            ("assistant", "The Eiffel Tower is in Paris, France."),
+            ("user",      "when was it built?"),
+            ("assistant", "It was built between 1887 and 1889 for the 1889 World's Fair in Paris."),
+            ("user",      "who was it named after?"),
+            ("assistant", "It was named after engineer Gustave Eiffel, whose company designed and built it."),
+            ("user",      "what else can I visit nearby?"),
+        ],
+    },
 ]
 
 QUICK_MSGS = [
@@ -94,6 +142,14 @@ QUICK_MSGS = [
     "back — tell me about cricket",
     "how many centuries does he have?",
     "who founded openai?",
+    "who was India's first prime minister?",
+    "what are lentils rich in?",
+    "who directed Interstellar?",
+    "where is the Eiffel Tower?",
+    "what is photosynthesis?",
+    "explain World War II",
+    "how does GPS work?",
+    "what is machine learning?",
 ]
 
 # ══════════════════════════════════════════════════════════════════
@@ -153,17 +209,6 @@ st.markdown("""
 #  CORE CLASSES
 # ══════════════════════════════════════════════════════════════════
 
-def is_interruption(text: str) -> bool:
-    t, words = text.strip().lower(), text.strip().lower().split()
-    q_words = {'who','what','where','when','why','how','which','whose','whom'}
-    if len(words) <= 3 and not any(w in q_words for w in words):
-        return True
-    for p in INTERRUPT_PATTERNS:
-        if re.match(p, t, re.IGNORECASE):
-            return True
-    return False
-
-
 @dataclass
 class EntityEntry:
     text: str; label: str; turn_idx: int
@@ -196,12 +241,15 @@ class TurnResult:
     raw_message:     str
     expanded_query:  str
     topic_l1:        str
-    topic_l1_score:  float
+    topic_l1_score:  Optional[float]
     topic_l2:        str
-    topic_l2_score:  float
+    topic_l2_score:  Optional[float]
     entities_used:   List[str]
     was_expanded:    bool
     is_interruption: bool
+    needs_clarification: bool = False
+    clarification_question: str = ""
+    reply: str = ""
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -245,26 +293,28 @@ def load_models(hf_token: str):
 # ══════════════════════════════════════════════════════════════════
 
 EXPANSION_SYSTEM = (
-    "Rewrite the latest user message into a fully self-contained query using context.\n"
-    "- Replace all pronouns and implicit references with explicit names.\n"
-    "- Expand incomplete questions, topic shifts, or comparisons into full sentences.\n"
-    "- Output ONLY the rewritten query. No quotes, no explanations. "
-    "Return as-is if already self-contained."
+    'Return one JSON object with keys status, expanded_query, clarification_question, '
+    'answer, intent_preserved, unsupported_details. Resolve the latest message using '
+    'chat context. Preserve intent; never guess unsupported details. If ambiguous, use '
+    'status="needs_clarification", provide one short clarification_question, and set '
+    'expanded_query and answer to empty strings. Otherwise use status="ready", provide '
+    'a standalone expanded_query, and answer in at most 3 short sentences/50 words. '
+    'Use chat and general knowledge; flag possibly outdated current facts. Set '
+    'intent_preserved=true and unsupported_details=false.'
 )
 
 
 def groq_expand(history: list, current_msg: str, entity_reg: EntityRegister,
-                groq_client) -> str:
+                groq_client):
+    recent_history = history[-8:]
     history_str  = "\n".join(
         f"{'User' if t['role']=='user' else 'Assistant'}: {t['text']}"
-        for t in history
+        for t in recent_history
     )
     user_prompt = (
-        f"Conversation context (last {len(history)} messages):\n"
-        f"{history_str}\n\n"
-        f"Named entities in context: {entity_reg.as_context_string()}\n\n"
-        f"Latest user message: {current_msg}\n\n"
-        f"Rewrite as a self-contained question:"
+        f"Recent chat:\n{history_str}\n"
+        f"Entities: {entity_reg.as_context_string()}\n"
+        f"Latest message: {current_msg}\nReturn the required JSON."
     )
 
     resp = groq_client.chat.completions.create(
@@ -273,18 +323,24 @@ def groq_expand(history: list, current_msg: str, entity_reg: EntityRegister,
             {"role": "system", "content": EXPANSION_SYSTEM},
             {"role": "user",   "content": user_prompt},
         ],
+        response_format={"type": "json_object"},
+        reasoning_effort="low",
         temperature=0.3,
-        max_tokens=150,
+        max_tokens=220,
     )
-    expanded = resp.choices[0].message.content.strip()
+    return parse_expansion_decision(resp.choices[0].message.content or "", current_msg)
 
-    # Clean up — same logic as notebook
-    expanded = expanded.split("\n")[0].strip()
-    for prefix in ["Rewritten:", "Answer:", "Query:", "Here is", "Here's", "The question is"]:
-        if expanded.lower().startswith(prefix.lower()):
-            expanded = expanded[len(prefix):].strip()
 
-    return expanded if expanded else current_msg
+def short_interruption_reply(text: str) -> str:
+    """Reply to common fillers without spending another Groq request."""
+    normalized = text.strip().casefold().rstrip(".!?")
+    if normalized in {"brb", "brt", "afk", "wait", "wait a sec", "hold on", "one sec"}:
+        return "No problem—take your time."
+    if normalized in {"back", "i'm back", "im back", "coming back"}:
+        return "Welcome back. What would you like to ask?"
+    if normalized in {"thanks", "thank you"}:
+        return "You're welcome!"
+    return "Got it. What would you like to ask next?"
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -292,27 +348,55 @@ def groq_expand(history: list, current_msg: str, entity_reg: EntityRegister,
 # ══════════════════════════════════════════════════════════════════
 
 def process_turn(text, history_deque, entity_reg, nlp, clf_l1, clf_l2,
-                 groq_client, turn_idx) -> TurnResult:
+                 groq_client, turn_idx, generate_reply=True) -> TurnResult:
 
+    prior_history = list(history_deque)
     entity_reg.update(text, turn_idx, nlp)
     entity_reg.prune(max(0, turn_idx - CONTEXT_WINDOW))
     entities_used = [e.text for e in entity_reg.get_recent(5)]
     interrupt     = is_interruption(text)
 
+    needs_clarification = False
+    clarification_question = ""
     if interrupt:
         expanded = text
-        l1, l1s  = "General", 1.0
-        l2, l2s  = "General", 1.0
-        was_exp  = False
+        l1, l2 = "General", "General"
+        l1s, l2s = None, None
+        was_exp = False
     else:
-        expanded = groq_expand(list(history_deque), text, entity_reg, groq_client)
-        was_exp  = expanded.lower().strip() != text.lower().strip()
-        r1  = clf_l1(expanded)[0]
-        r2  = clf_l2(expanded)[0]
-        l1, l1s = r1["label"], r1["score"]
-        l2, l2s = r2["label"], r2["score"]
+        decision = groq_expand(prior_history, text, entity_reg, groq_client)
+        needs_clarification = decision.needs_clarification
+        clarification_question = decision.clarification_question
+        if needs_clarification:
+            expanded = text
+            l1, l2 = "Needs clarification", "Unassigned"
+            l1s, l2s = None, None
+            was_exp = False
+        else:
+            expanded = decision.expanded_query
+            was_exp = expanded.casefold().strip() != text.casefold().strip()
+            r1 = clf_l1(expanded)[0]
+            l1 = canonical_l1(r1["label"]) or "General"
+            l1s = float(r1["score"]) if l1 != "General" or r1["label"] == "General" else 0.0
+            r2_candidates = clf_l2(expanded, top_k=None)
+            if r2_candidates and isinstance(r2_candidates[0], list):
+                r2_candidates = r2_candidates[0]
+            l2, l2s = select_consistent_l2(l1, r2_candidates)
+
+    if not needs_clarification and not interrupt:
+        reply = decision.answer.strip() or "I couldn't prepare a short answer this time. Please try again."
+    elif needs_clarification:
+        reply = clarification_question or "Could you clarify what you mean?"
+    else:
+        reply = short_interruption_reply(text)
 
     history_deque.append({"role": "user", "text": text})
+    if generate_reply:
+        history_deque.append({"role": "assistant", "text": reply})
+        entity_reg.update(reply, turn_idx + 1, nlp)
+        entity_reg.prune(max(0, turn_idx + 1 - CONTEXT_WINDOW))
+    else:
+        reply = ""
 
     return TurnResult(
         raw_message=text, expanded_query=expanded,
@@ -321,6 +405,9 @@ def process_turn(text, history_deque, entity_reg, nlp, clf_l1, clf_l2,
         entities_used=entities_used,
         was_expanded=was_exp,
         is_interruption=interrupt,
+        needs_clarification=needs_clarification,
+        clarification_question=clarification_question,
+        reply=reply,
     )
 
 
@@ -342,7 +429,7 @@ with st.sidebar:
 
 **2 · Interruption check** `brb`, `wait`, `ok` → tag `General`, skip LLM
 
-**3 · Groq · llama-3.1-8b-instant** Rewrites query using history + entity context
+**3 · Groq · configured Groq model** Expands the query and returns a short model response in the same request
 
 **4 · DistilBERT classifier** Tags `topic_l1` and `topic_l2`
 """)
@@ -351,7 +438,7 @@ with st.sidebar:
     st.markdown("### 🏷️  Models")
     st.caption("Adignite/query-topic-l1-classifier")
     st.caption("Adignite/query-topic-l2-classifier")
-    st.caption("meta-llama/llama-3.1-8b-instant (Groq)")
+    st.caption(GROQ_MODEL + " (Groq)")
     st.caption("en_core_web_sm (spaCy)")
 
     st.markdown("---")
@@ -438,10 +525,10 @@ for key, default in [
 # ══════════════════════════════════════════════════════════════════
 
 st.markdown("### 📎  Sample Conversations")
-s_cols = st.columns(len(SAMPLE_CONVERSATIONS))
-for i, (col, sample) in enumerate(zip(s_cols, SAMPLE_CONVERSATIONS)):
-    with col:
-        if st.button(sample["label"], key=f"sample_{i}", use_container_width=True):
+s_cols = st.columns(3)
+for i, sample in enumerate(SAMPLE_CONVERSATIONS):
+    with s_cols[i % 3]:
+        if st.button(sample["label"], key=f"sample_{i}", width="stretch"):
             st.session_state.sample_pending = i
 
 if st.session_state.sample_pending is not None:
@@ -457,7 +544,11 @@ if st.session_state.sample_pending is not None:
     st.session_state.chat_display  = []
 
     with st.spinner(f"Running: {sample['label']} …"):
-        for role, text in sample["turns"]:
+        last_user_position = max(
+            position for position, (role, _) in enumerate(sample["turns"])
+            if role == "user"
+        )
+        for position, (role, text) in enumerate(sample["turns"]):
             if role == "assistant":
                 st.session_state.history_deque.append({"role": "assistant", "text": text})
                 st.session_state.entity_reg.update(
@@ -466,6 +557,17 @@ if st.session_state.sample_pending is not None:
                 st.session_state.turn_idx += 1
                 st.session_state.chat_display.append({"role": "assistant", "text": text})
             else:
+                if position != last_user_position:
+                    st.session_state.history_deque.append({"role": "user", "text": text})
+                    st.session_state.entity_reg.update(
+                        text, st.session_state.turn_idx, st.session_state.nlp
+                    )
+                    st.session_state.entity_reg.prune(
+                        max(0, st.session_state.turn_idx - CONTEXT_WINDOW)
+                    )
+                    st.session_state.turn_idx += 1
+                    st.session_state.chat_display.append({"role": "user", "text": text})
+                    continue
                 result = process_turn(
                     text,
                     st.session_state.history_deque,
@@ -475,12 +577,18 @@ if st.session_state.sample_pending is not None:
                     st.session_state.clf_l2,
                     st.session_state.groq_client,
                     st.session_state.turn_idx,
+                    generate_reply=True,
                 )
                 st.session_state.turn_idx += 1
                 st.session_state.turn_history.append(result)
                 st.session_state.chat_display.append(
                     {"role": "user", "text": text, "result": result}
                 )
+                if result.reply:
+                    st.session_state.turn_idx += 1
+                    st.session_state.chat_display.append(
+                        {"role": "assistant", "text": result.reply}
+                    )
     st.rerun()
 
 
@@ -507,6 +615,12 @@ def handle_submit():
         st.session_state.chat_display.append(
             {"role": "user", "text": current_msg, "result": result}
         )
+        if result.reply:
+            st.session_state.chat_display.append(
+                {"role": "assistant", "text": result.reply}
+            )
+        if result.reply:
+            st.session_state.turn_idx += 1
         # It is now 100% safe to clear the input here!
         st.session_state.user_input = ""
         
@@ -516,7 +630,7 @@ left_col, right_col = st.columns([1, 1], gap="large")
 with left_col:
     st.markdown("### 💬  Conversation")
 
-    if st.button("🗑️  Reset Conversation", use_container_width=True):
+    if st.button("🗑️  Reset Conversation", width="stretch"):
         st.session_state.history_deque = deque(maxlen=CONTEXT_WINDOW)
         st.session_state.entity_reg    = EntityRegister()
         st.session_state.turn_idx      = 0
@@ -536,12 +650,12 @@ with left_col:
         for item in st.session_state.chat_display:
             if item["role"] == "user":
                 st.markdown(
-                    f'<div class="bubble-user">👤 {item["text"]}</div>',
+                    f'<div class="bubble-user">👤 {html.escape(item["text"], quote=True)}</div>',
                     unsafe_allow_html=True,
                 )
             else:
                 st.markdown(
-                    f'<div class="bubble-assistant">🤖 {item["text"]}</div>',
+                    f'<div class="bubble-assistant">🤖 {html.escape(item["text"], quote=True)}</div>',
                     unsafe_allow_html=True,
                 )
 
@@ -550,7 +664,7 @@ with left_col:
     qcols = st.columns(4)
     for qi, qmsg in enumerate(QUICK_MSGS):
         with qcols[qi % 4]:
-            if st.button(qmsg, key=f"q{qi}", use_container_width=True):
+            if st.button(qmsg, key=f"q{qi}", width="stretch"):
                 # Fixed: update session_state matching text_input key directly
                 st.session_state.user_input = qmsg
 
@@ -570,7 +684,7 @@ with left_col:
             placeholder="e.g. 'Narendra Modi has been PM since 2014.'",
             key="bot_input",
         )
-        if st.button("Add to context", use_container_width=True):
+        if st.button("Add to context", width="stretch"):
             if bot_text.strip():
                 st.session_state.history_deque.append(
                     {"role": "assistant", "text": bot_text.strip()}
@@ -584,7 +698,7 @@ with left_col:
                 )
                 st.rerun()
 
-    st.button("🚀  Send", type="primary", use_container_width=True, on_click=handle_submit)
+    st.button("🚀  Send", type="primary", width="stretch", on_click=handle_submit)
 
 
 # ── RIGHT: RESULTS ────────────────────────────────────────────────
@@ -603,46 +717,75 @@ with right_col:
 
         st.markdown("#### 🔎  Latest Turn")
 
-        if latest.is_interruption:
+        if latest.needs_clarification:
+            badge = '<span class="badge-interrupt">Needs clarification</span>'
+        elif latest.is_interruption:
             badge = '<span class="badge-interrupt">⏸ Interruption</span>'
         elif latest.was_expanded:
             badge = '<span class="badge-expanded">✦ Expanded</span>'
         else:
             badge = '<span class="badge-complete">✓ Already complete</span>'
 
+        raw_message_html = html.escape(latest.raw_message, quote=True)
+        expanded_query_html = html.escape(latest.expanded_query, quote=True)
         st.markdown(f"""
 <div class="card">
   <div class="lbl">RAW MESSAGE</div>
-  <div class="val">{latest.raw_message}</div>
+  <div class="val">{raw_message_html}</div>
 </div>
 <div class="card">
   <div class="lbl">EXPANDED QUERY &nbsp; {badge}</div>
-  <div class="val expanded-text">{latest.expanded_query}</div>
+  <div class="val expanded-text">{expanded_query_html}</div>
 </div>
 """, unsafe_allow_html=True)
 
-        l1b = int(latest.topic_l1_score * 100)
-        l2b = int(latest.topic_l2_score * 100)
-        st.markdown(f"""
+        if latest.reply:
+            if latest.needs_clarification:
+                response_label = "CLARIFICATION"
+            elif latest.is_interruption:
+                response_label = "QUICK RESPONSE · NO GROQ CALL"
+            else:
+                response_label = "MODEL RESPONSE"
+            response_html = html.escape(latest.reply, quote=True)
+            st.markdown(f"""
+<div class="card">
+  <div class="lbl">{response_label}</div>
+  <div class="val">{response_html}</div>
+</div>
+""", unsafe_allow_html=True)
+
+        if not latest.needs_clarification:
+            topic_l1_html = html.escape(latest.topic_l1, quote=True)
+            topic_l2_html = html.escape(latest.topic_l2, quote=True)
+            if latest.topic_l1_score is None or latest.topic_l2_score is None:
+                st.markdown(f"""
 <div class="card">
   <div class="lbl">TOPIC</div>
-  <span class="tag-pill" style="background:{color};">{latest.topic_l1}</span>
-  <span style="color:#6b7280;font-size:1.1rem;"> › </span>
-  <span class="tag-pill" style="background:{color}99;">{latest.topic_l2}</span>
+  <span class="tag-pill" style="background:{color};">{topic_l1_html}</span>
+  <span style="color:#6b7280;font-size:1.1rem;"> &gt; </span>
+  <span class="tag-pill" style="background:{color}99;">{topic_l2_html}</span>
+</div>
+""", unsafe_allow_html=True)
+                st.caption("Rule-based label; no classifier confidence score.")
+            else:
+                l1b = int(latest.topic_l1_score * 100)
+                l2b = int(latest.topic_l2_score * 100)
+                st.markdown(f"""
+<div class="card">
+  <div class="lbl">TOPIC</div>
+  <span class="tag-pill" style="background:{color};">{topic_l1_html}</span>
+  <span style="color:#6b7280;font-size:1.1rem;"> &gt; </span>
+  <span class="tag-pill" style="background:{color}99;">{topic_l2_html}</span>
   <br><br>
   <div style="display:flex;gap:18px;">
     <div style="flex:1;">
       <div style="font-size:.7rem;color:#6b7280;">L1 confidence</div>
-      <div class="conf-wrap">
-        <div class="conf-bar" style="width:{l1b}%;background:{color};"></div>
-      </div>
+      <div class="conf-wrap"><div class="conf-bar" style="width:{l1b}%;background:{color};"></div></div>
       <div style="font-size:.75rem;color:#9ca3af;margin-top:2px;">{latest.topic_l1_score:.3f}</div>
     </div>
     <div style="flex:1;">
       <div style="font-size:.7rem;color:#6b7280;">L2 confidence</div>
-      <div class="conf-wrap">
-        <div class="conf-bar" style="width:{l2b}%;background:{color}99;"></div>
-      </div>
+      <div class="conf-wrap"><div class="conf-bar" style="width:{l2b}%;background:{color}99;"></div></div>
       <div style="font-size:.75rem;color:#9ca3af;margin-top:2px;">{latest.topic_l2_score:.3f}</div>
     </div>
   </div>
@@ -651,7 +794,7 @@ with right_col:
 
         if latest.entities_used:
             pills = "".join(
-                f'<span class="entity-pill">{e}</span>' for e in latest.entities_used
+                f'<span class="entity-pill">{html.escape(e, quote=True)}</span>' for e in latest.entities_used
             )
             st.markdown(f"""
 <div class="card">
@@ -660,7 +803,7 @@ with right_col:
 </div>
 """, unsafe_allow_html=True)
 
-        if len(st.session_state.turn_history) > 1:
+        if st.session_state.turn_history:
             st.markdown("#### 📜  Turn History")
             import pandas as pd
             rows = []
@@ -670,7 +813,7 @@ with right_col:
                     "Expanded": t.expanded_query[:50] + ("…" if len(t.expanded_query) > 50 else ""),
                     "L1":       t.topic_l1,
                     "L2":       t.topic_l2,
-                    "Conf":     f"{t.topic_l1_score:.2f}",
+                    "Conf":     f"{t.topic_l1_score:.2f}" if t.topic_l1_score is not None else "n/a",
                     "⤴":        "✓" if t.was_expanded else "—",
                 })
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)

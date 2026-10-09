@@ -9,8 +9,8 @@ End-to-end Streamlit app that watches a live conversation and for every user mes
 |-----------|-------|
 | Topic L1 Classifier | `Adignite/query-topic-l1-classifier` |
 | Topic L2 Classifier | `Adignite/query-topic-l2-classifier` |
-| Query Expansion LLM | `meta-llama/Llama-3.2-1B-Instruct` |
-| Named Entity Recognition | `en_core_web_trf` (spaCy) |
+| Query Expansion and Reply LLM | Groq API (`openai/gpt-oss-20b`) |
+| Named Entity Recognition | `en_core_web_sm` (spaCy) |
 
 ---
 ![Website](Website.jpeg)
@@ -18,13 +18,13 @@ End-to-end Streamlit app that watches a live conversation and for every user mes
 
 **Backend** [Checkout the Project Repo](https://github.com/DeityAG/Real-Time-Query_Expansion_amd_Topic-Tagging_backend_pipeline)
 
-This repository contains an end-to-end conversational AI utility that monitors a live dialogue and processes every user message in real-time. It transforms implicit, context-dependent shorthand into fully self-contained questions and applies a hierarchical, two-level topic classification.
+This repository contains an end-to-end conversational NLP utility that processes user messages in context. It transforms implicit, context-dependent shorthand into standalone queries, applies hierarchical topic classification, and returns a brief reply in the same Groq request used for expansion.
 
 ## 🚀 The Problem
 In human conversation, we often use pronouns ("What are **his** duties?"), ellipsis ("And in the **UK**?"), or temporary interruptions ("Wait, **brb**"). Standard NLP systems often fail to categorize these messages correctly because they lack historical context. This system solves that by maintaining a sliding context window and an entity register.
 
 ## ✨ Key Features
-* **Query Expansion:** Resolves pronouns and topic shifts using **Llama-3.1-8b-instant** (via Groq API).
+* **Query Expansion and Reply:** Resolves pronouns and topic shifts, then returns a reply of at most 50 words using **openai/gpt-oss-20b** (via Groq API) in the same request.
 * **Hierarchical Tagging:** Categorizes queries into a 2-level hierarchy (e.g., `Politics > India` or `Sports > Cricket`).
 * **Entity Register:** Uses **spaCy NER** to track people, organizations, and locations across the last 20 messages.
 * **Interruption Handling:** Detects small talk and conversational pauses (e.g., "ok," "one sec") to bypass unnecessary LLM calls and tag them as `General`.
@@ -34,7 +34,7 @@ In human conversation, we often use pronouns ("What are **his** duties?"), ellip
 | Component | Technology |
 | :--- | :--- |
 | **Frontend** | [Streamlit](https://streamlit.io/) |
-| **LLM Inference** | [Groq](https://groq.com/) (**Llama-3.1-8b-instant**) |
+| **LLM Inference** | [Groq](https://groq.com/) (`openai/gpt-oss-20b`) |
 | **Topic Classifier** | Fine-tuned **DistilBERT** (hosted on Hugging Face) |
 | **NER Engine** | **spaCy** (`en_core_web_sm`) |
 | **Environment** | Python 3.10 |
@@ -43,7 +43,7 @@ In human conversation, we often use pronouns ("What are **his** duties?"), ellip
 1.  **Context Management:** Maintains a sliding window of the last 20 dialogue exchanges.
 2.  **Entity Tracking:** Extracts and stores named entities (PERSON, GPE, ORG) from every turn.
 3.  **Interruption Detection:** Filters out short non-query messages.
-4.  **LLM Expansion:** Rewrites the raw message into a standalone query using the context window and entity register.
+4.  **LLM Expansion and Reply:** Rewrites the raw message into a standalone query and returns a brief reply in the same Groq request, using the context window and entity register. Ambiguous messages receive a short clarification question.
 5.  **Classification:** Runs the expanded query through L1 and L2 DistilBERT classifiers.
 
 ## 📦 Installation & Setup
@@ -91,3 +91,6 @@ README.md            This file
 ---
 *Developed for research in real-time conversational context resolution.*
 
+# Short replies
+
+For each new message, the app can return a brief conversational answer along with its query expansion. Both are produced in the same Groq API request to limit token use. The prompt includes up to the latest eight chat messages, and the response is capped at 220 tokens; replies are limited to three short sentences and 50 words. Interruption messages receive a short built-in response without a Groq request. Answers use the conversation and general model knowledge; the app does not retrieve live information.

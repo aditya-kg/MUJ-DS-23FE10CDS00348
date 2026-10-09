@@ -15,3 +15,6 @@ The pipeline uses conversation context to expand implicit or abbreviated user qu
 - Results: [`results/`](results/)
 
 The backend repository includes a project document and additional dataset/model documentation. Refer to those files for methodology and detailed results.
+# Short conversational replies
+
+The frontend returns a brief reply for new messages. Query expansion and reply generation share one Groq request, with replies limited to three short sentences and 50 words. Interruption messages use a built-in response without calling Groq. Replies use conversation context and general model knowledge; they are not backed by live retrieval.
