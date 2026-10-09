@@ -15,6 +15,10 @@
 
 **Real-Time Query Expansion and Topic Tagging**
 
+## Live demo
+
+[Open the Streamlit app](https://muj-ds-23fe10cds00348.streamlit.app/)
+
 ## Training program
 
 This repository accompanies training in **Natural Language Processing (NLP)**. Its focus includes conversational language processing, query expansion, named entity recognition, text classification, and the practical stages of building an NLP pipeline. Course assignments, notebooks, learning resources, and presentations can be added to their matching folders as the program progresses.
@@ -27,7 +31,7 @@ For example, after someone mentions India’s prime minister, the tool could tur
 
 The app can also generate a brief reply to each new message using the conversation and the model’s general knowledge. It does not retrieve live information, so answers about current events may be outdated. Query expansion and topic tagging remain the core project features.
 
-The college repository brings together the Streamlit application and the backend research pipeline. The backend contains dataset preparation and deduplication notebooks, classifier training and inference notebooks, generated datasets, model documentation, and a project report.
+The college repository brings together the Streamlit application and the backend research pipeline. The backend contains dataset preparation and deduplication notebooks, classifier training and inference notebooks, generated datasets, model documentation, and a project report. The live app is deployed from this repository.
 
 ## Goals and features
 
@@ -82,10 +86,23 @@ The backend README reports a merged dataset of 277 conversations and 2,046 user 
 
 ## Source repositories
 
-The project application and backend pipeline in this college repository were copied and organized from these original source repositories. This repository is a separate college submission copy, not a fork or submodule; the source repositories retain their own histories.
+The project application and backend pipeline in this college repository originated in these personal repositories. I copied and organized the relevant project files here as the official college submission; this repository is a separate project copy, not a fork or submodule, and the source repositories retain their own histories.
 
 - Frontend: [Real-Time-Query_Expansion_amd_Topic-Tagging](https://github.com/aditya-kg/Real-Time-Query_Expansion_amd_Topic-Tagging) → [`code/frontend/`](code/frontend/)
 - Backend: [Real-Time-Query_Expansion_amd_Topic-Tagging_backend_pipeline](https://github.com/aditya-kg/Real-Time-Query_Expansion_amd_Topic-Tagging_backend_pipeline) → [`code/backend/`](code/backend/)
+
+## Improvements in the college repository
+
+The college version builds on those source projects with an integrated, deployed Streamlit app and project-specific improvements, including:
+
+- Short contextual model replies returned in the same Groq request as query expansion.
+- More reliable structured response parsing and a clarification path for ambiguous messages.
+- L1/L2 topic consistency, so the subtopic is selected from the predicted topic's valid choices.
+- Interruption handling that skips Groq for common fillers while still processing valid short questions.
+- Expanded quick inputs and sample conversations across several topics. Sample conversations use their earlier turns as context and process only the final user message.
+- A human-conversation evaluation workflow with a schema, split and scoring scripts; downloaded preview data stays local.
+
+The live app uses the frontend in this repository, while the backend datasets, notebooks, and evaluation materials remain available for the college project and further development.
 
 ## Setup
 
@@ -103,7 +120,7 @@ streamlit run code/frontend/app.py
 
 Never commit real API keys or credentials. For backend notebook dependencies and model setup, see [`code/backend/README.md`](code/backend/README.md), [`capstone/installation.md`](capstone/installation.md), and the notebook-specific documentation.
 
-The frontend README links to the [live Streamlit demo](https://gsdtepaqrm57qwsoqzz4qu.streamlit.app/).
+The app is deployed at [muj-ds-23fe10cds00348.streamlit.app](https://muj-ds-23fe10cds00348.streamlit.app/).
 
 ## Academic use
 
